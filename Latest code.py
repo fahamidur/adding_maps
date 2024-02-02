@@ -100,7 +100,7 @@ price_colors = {
     (0, 50): {'color': 'darkgreen', 'label': '0-50 EUR'},
     (50, 100): {'color': 'gold', 'label': '50-100 EUR'},
     (100, 200): {'color': 'orange', 'label': '100-200 EUR'},
-    (200, 1000): {'color': 'tomato', 'label': '200-1000 EUR'}
+    (200, 1000): {'color': 'red', 'label': '200-1000 EUR'}
 }
 
 # Calculate distance using Haversine formula
@@ -143,81 +143,147 @@ ac = st.sidebar.checkbox("Air Conditioning")
 predict_toggle_col1 = st.sidebar.toggle('**Predict Rent**')
 
 
-# Function to create and initialize the map
+import folium
+from folium.plugins import MarkerCluster
+from folium import plugins
+from folium import IFrame
+icon_create_function = """
+    function(cluster) {
+        var childCount = cluster.getChildCount(); 
+        var c = ' marker-cluster-';
+        
+        var clusterColor = 'darkgreen'; // Default color
+
+         // Check the colors of all markers in the cluster
+        cluster.getAllChildMarkers().forEach(function(marker) {
+            var markerColor = marker.options.icon.options.color || 'darkgreen';
+            if (markerColor === 'red') {
+                clusterColor = 'red';
+            } else if  (markerColor === 'orange') {
+                clusterColor = 'orange';
+            } else if  (markerColor === 'gold') {
+                clusterColor = 'gold';
+            }else {
+                clusterColor = 'darkgreen';
+            }
+        });
+
+
+        // Check the colors of all markers in the cluster
+    
+
+        if (childCount < 50) {
+            c += 'large';
+        } else if (childCount < 300) {
+            c += 'medium';
+        } else {
+            c += 'small';
+        }
+
+        return new L.DivIcon({ 
+            html: '<div><span>' + childCount + '</span></div>', 
+            className: 'marker-cluster' + c, 
+            iconSize: new L.Point(40, 40),
+            iconColor: clusterColor
+        });
+    }
+"""
+
+from folium import IFrame, Map, Marker, Popup, Element, plugins
+
+# Assume you already have the df, price_colors, and icon_create_function defined
+
+def generate_popup_html(row):
+    airbnb_type = row['AirBnB type'].replace('_', ' ').title()
+    price_night = row['Price/Night']
+
+    popup_text = f"Price/Night: {price_night} EUR<br>" \
+                 f"Type: {airbnb_type}<br>" \
+                 f"URL: <a href='{row['Url']}' target='_blank'>Link</a><br>"
+
+    desired_amenities = ['AC', 'WIFI', 'Kitchen', 'Free parking on the property', 'TV']
+    for amenity in desired_amenities:
+        popup_text += f"{amenity}: {'&#10004;' if row[amenity] == 1 else '&#10008;'}<br>"
+
+    # Embed the website preview within the popup using an iframe
+    embed_code = f"<div class='airbnb-embed-frame' data-id='{row['Url']}' data-view='home' data-hide-price='true' data-hide-reviews='true' style='width: 450px; height: 300px; margin: auto;'>" \
+                 f"<a href='{row['Url']}'>View On Airbnb</a>" \
+                 f"<a href='{row['Url']}' rel='nofollow'>{row['AirBnB type']} · ★{row['reviews']} · {row['Bedrooms']} bedrooms · {row['Beds']} beds · {row['Bathrooms']} bath</a>" \
+                 f"<script async src='https://www.airbnb.com/embeddable/airbnb_jssdk'></script></div>"
+
+    popup_text += f"Website Preview: {embed_code}"
+
+    return popup_text
+
+# Function to create the map
 def create_map(user_address=None):
     map_center = [df['Latitude'].mean(), df['Longitude'].mean()]
-    mymap = folium.Map(location=map_center, zoom_start=12)
-
-    # Define color intervals for Price/Night with explanations
-    price_colors = {
-        (0, 50): {'color': 'darkgreen', 'label': '0-50 EUR'},
-        (50, 100): {'color': 'gold', 'label': '50-100 EUR'},
-        (100, 200): {'color': 'orange', 'label': '100-200 EUR'},
-        (200, 1000): {'color': 'tomato', 'label': '200-1000 EUR'}
-    }
+    mymap = Map(location=map_center, zoom_start=12)
 
     # Create separate MarkerClusters for each color category
-    marker_clusters = {color_info["color"]: MarkerCluster().add_to(mymap) for _, color_info in price_colors.items()}
+    marker_clusters = {color_info["color"]: plugins.MarkerCluster(icon_create_function=icon_create_function).add_to(mymap) for _, color_info in price_colors.items()}
+
+    # Create a dictionary to store the hierarchy values of colors within each cluster
+    cluster_hierarchy_values = {}
 
     for index, row in df.iterrows():
-        # Format Airbnb type for display
-        airbnb_type = row['AirBnB type'].replace('_', ' ').title()
-
-        # Extract the price from the Excel file
-        price_night = row['Price/Night']
-
-        popup_text = f"Price/Night: {price_night} EUR<br>" \
-                     f"Type: {airbnb_type}<br>" \
-                     f"URL: <a href='{row['Url']}' target='_blank'>Link</a><br>"
-
-        # Include only desired amenities in the popup
-        desired_amenities = ['AC', 'WIFI', 'Kitchen', 'Free parking on the property', 'TV']
-        for amenity in desired_amenities:
-            popup_text += f"{amenity}: {'&#10004;' if row[amenity] == 1 else '&#10008;'}<br>"
-
-        # Determine the color category based on the price range
         color = next((color_info['color'] for price_range, color_info in price_colors.items() if
-                      price_range[0] <= price_night < price_range[1]), 'grey')
+                      price_range[0] <= row['Price/Night'] < price_range[1]), 'grey')
 
-        # Get the MarkerCluster based on the color
         marker_cluster = marker_clusters[color]
 
-        # Add a number to each marker in the cluster
-        cluster_size = len(marker_cluster._children) + 1
-        popup_text = f"Cluster {cluster_size}<br>" + popup_text
+        # Use the generate_popup_html function to create popups with embedded website preview
+        popup_html = generate_popup_html(row)
 
-        # Use folium.Marker instead of folium.CircleMarker for better control over popups
-        folium.Marker(
+        # Embed the website preview within the popup using an iframe
+        iframe_popup = IFrame(html=popup_html, width=300, height=250)
+
+        Marker(
             location=[row['Latitude'], row['Longitude']],
-            popup=folium.Popup(popup_text, max_width=300),
-            icon=folium.Icon(color=color)
+            popup=Popup(iframe_popup, max_width=300),
+            icon=folium.Icon(color=color),
         ).add_to(marker_cluster)
 
-    # Add a legend to the map
+        hierarchy_value = {'darkgreen': 0, 'gold': 1, 'orange': 2, 'red': 3}.get(color, -1)
+        cluster_hierarchy_values.setdefault(color, []).append(hierarchy_value)
+
+    for color, values in cluster_hierarchy_values.items():
+        marker_cluster = marker_clusters[color]
+        if any(value == 3 for value in values):
+            marker_cluster.location = map_center
+            marker_cluster.icon = folium.Icon(color='red')
+        elif any(value == 2 for value in values):
+            marker_cluster.icon = folium.Icon(color='orange')
+        elif any(value == 1 for value in values):
+            marker_cluster.icon = folium.Icon(color='gold')
+        else:
+            marker_cluster.icon = folium.Icon(color='darkgreen')
+
     legend_html = '<div style="position: fixed; bottom: 10px; left: 10px; z-index: 1000; background-color: white; padding: 10px; border: 1px solid grey;">'
     legend_html += '<b>Price Intervals:</b><br>'
     for price_range, color_info in price_colors.items():
         legend_html += f'<div style="background-color: {color_info["color"]}; width: 15px; height: 15px; display: inline-block;"></div> {color_info["label"]}<br>'
     legend_html += '</div>'
-    mymap.get_root().html.add_child(folium.Element(legend_html))
+    mymap.get_root().html.add_child(Element(legend_html))
 
-    user_lat, user_lon = None, None  # Initialize with default values
+    user_lat, user_lon = None, None
 
-    # Check and add marker for user address
     if user_address:
         user_lat, user_lon = get_lat_lon_from_address(user_address)
         if user_lat and user_lon:
-            folium.Marker(
+            Marker(
                 location=[user_lat, user_lon],
                 popup=f'User Entered Address: {user_address}',
-                icon=folium.Icon(color='red')
+                icon=folium.Icon(color='red'),
             ).add_to(mymap)
 
-            # Update map center and zoom based on the user's address
             mymap.location = [user_lat, user_lon]
             mymap.zoom_start = 15
 
     return mymap, user_lat, user_lon
+
+
+
 
 # Row 1: Map and Rent Prediction
 col1, col2 = st.columns([8,4])  # Creating two columns in the first row
@@ -235,7 +301,7 @@ with col1:
         ("darkgreen", "0-50 EUR"),
         ("gold", "50-100 EUR"),
         ("orange", "100-200 EUR"),
-        ("tomato", "200-1000 EUR")
+        ("red", "200-1000 EUR")
     ]
 
     for idx, (color, desc) in enumerate(legend_info):
